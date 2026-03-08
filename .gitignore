@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local files
+kod.txt
+
+# Generated flowcharts
+flowcharts_kod/
