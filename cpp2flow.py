@@ -181,6 +181,13 @@ class FlowchartRenderer:
             length = self.scale
         if at is None:
             at = self.last_pos
+            
+        if direction == 'down' and label:
+            shift_len = length * 0.35
+            line_shift = flow.Line().at(at).down(shift_len)
+            l_shift = self.d.add(line_shift)
+            at = l_shift.end
+            length = length - shift_len
         line = flow.Line().at(at)
         if label:
             loc = 'top' if direction in ['left', 'right'] else 'bottom'
@@ -338,21 +345,9 @@ class FlowchartRenderer:
                             is_terminated = True
                             continue
 
-                    # Drop the return line slightly lower to ensure a visible elbow
-                    descent = max(2.5, abs(self.max_y - self.last_pos[1]) + 2.5)
-                    self.add_line(descent, 'down', arrow=False)
-
-                    # Highway X: Tighter balanced outer lane
-                    preferred_x = self.axis_x + 18.0
-                    
-                    # Start checking from preferred_x, push out only if needed
-                    highway_x = self.find_safe_x(preferred_x, self.last_pos[1], -2000.0, 
-                                                direction='right', margin=8.0)
-                    
-                    h_line = self.d.add(flow.Line().at(self.last_pos).tox(highway_x))
-                    self.return_points.append(h_line.end)
-
-                    self.max_y = min(self.max_y, h_line.end[1])
+                    # In a side branch: register the block's bottom as a return
+                    # point so 'end' can merge it — but without a horizontal exit.
+                    self.return_points.append(self.last_pos)
                     is_terminated = True
 
                 elif ntype == 'end':
@@ -368,13 +363,66 @@ class FlowchartRenderer:
                             self.merge_side_branch(self.last_pos, dead_main=True, target_y=y)
                         
                         # Join all return highways to the axis at junction level y
-                        for rp in self.return_points:
-                             # 1. Drop highway down to level y (rp is (x, entry_y))
-                             if abs(rp[1] - y) > 0.1:
-                                 self.d.add(flow.Line().at(rp).toy(y))
-                             # 2. Horizontal merge to axis
-                             if abs(rp[0] - self.axis_x) > 0.1:
-                                 self.d.add(flow.Line().at((rp[0], y)).tox(self.axis_x))
+                        if self.return_points:
+                            right_rps = sorted([rp for rp in self.return_points if rp[0] >= self.axis_x], key=lambda p: p[1], reverse=True)
+                            left_rps = sorted([rp for rp in self.return_points if rp[0] < self.axis_x], key=lambda p: p[1], reverse=True)
+                            
+                            core_max_x = max([bbox['x2'] for bbox in self.blocks_bboxes]) + 15.0 if self.blocks_bboxes else self.axis_x + 30.0
+                            core_min_x = min([bbox['x1'] for bbox in self.blocks_bboxes]) - 15.0 if self.blocks_bboxes else self.axis_x - 30.0
+                            
+                            outer_right_count = 0
+                            for i, rp in enumerate(right_rps):
+                                # Check if safe to drop straight down
+                                is_safe = True
+                                y_min, y_max = min(rp[1], y) + 0.1, max(rp[1], y) - 0.1
+                                for bbox in self.blocks_bboxes:
+                                    # If block overlaps vertically with our path
+                                    if not (bbox['y2'] < y_min - 0.5 or bbox['y1'] > y_max + 0.5):
+                                        # If block overlaps horizontally with rp[0]
+                                        # We add a generous margin to detect near-misses properly
+                                        if (bbox['x1'] - 6.0) <= rp[0] <= (bbox['x2'] + 6.0):
+                                            is_safe = False
+                                            break
+                                            
+                                if is_safe:
+                                    highway_x = rp[0]
+                                else:
+                                    highway_x = core_max_x + (len(right_rps) - 1 - outer_right_count) * 6.0
+                                    outer_right_count += 1
+                                    
+                                drop_y = rp[1] - 1.5
+                                self.d.add(flow.Line().at(rp).toy(drop_y))
+                                if abs(highway_x - rp[0]) > 0.1:
+                                    self.d.add(flow.Line().at((rp[0], drop_y)).tox(highway_x))
+                                if abs(drop_y - y) > 0.1:
+                                    self.d.add(flow.Line().at((highway_x, drop_y)).toy(y))
+                                if abs(highway_x - self.axis_x) > 0.1:
+                                    self.d.add(flow.Line().at((highway_x, y)).tox(self.axis_x))
+                                    
+                            outer_left_count = 0
+                            for i, rp in enumerate(left_rps):
+                                is_safe = True
+                                y_min, y_max = min(rp[1], y) + 0.1, max(rp[1], y) - 0.1
+                                for bbox in self.blocks_bboxes:
+                                    if not (bbox['y2'] < y_min - 0.5 or bbox['y1'] > y_max + 0.5):
+                                        if (bbox['x1'] - 6.0) <= rp[0] <= (bbox['x2'] + 6.0):
+                                            is_safe = False
+                                            break
+                                            
+                                if is_safe:
+                                    highway_x = rp[0]
+                                else:
+                                    highway_x = core_min_x - (len(left_rps) - 1 - outer_left_count) * 6.0
+                                    outer_left_count += 1
+                                    
+                                drop_y = rp[1] - 1.5
+                                self.d.add(flow.Line().at(rp).toy(drop_y))
+                                if abs(highway_x - rp[0]) > 0.1:
+                                    self.d.add(flow.Line().at((rp[0], drop_y)).tox(highway_x))
+                                if abs(drop_y - y) > 0.1:
+                                    self.d.add(flow.Line().at((highway_x, drop_y)).toy(y))
+                                if abs(highway_x - self.axis_x) > 0.1:
+                                    self.d.add(flow.Line().at((highway_x, y)).tox(self.axis_x))
                                 
                         self.return_points = []
                         is_terminated = False # Junction established
@@ -399,7 +447,7 @@ class FlowchartRenderer:
                 dia = self.add_block('decision' if ntype == 'while' else 'for_loop', cond_label, skip_line=is_first)
                 is_first = False
 
-                self.add_line(1.2, 'down', arrow=False, label='Да')
+                self.add_line(2.5, 'down', arrow=False, label='Да')
                 body_term = self.render_nodes(body_nodes, nest + 1, is_first=False)
 
                 block_w = dia.W[0] - dia.E[0]
