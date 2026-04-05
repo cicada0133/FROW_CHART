@@ -7,3 +7,8 @@ kod.txt
 
 # Generated flowcharts
 flowcharts_kod/
+out_charts_2/
+out_test/
+
+# Generated documents
+*.docx

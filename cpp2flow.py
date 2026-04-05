@@ -52,6 +52,7 @@ class PreProcess(flow.Box):
 
 # --- FIXED Preparation: do NOT inherit from flow.Box (no hidden rectangle) ---
 import schemdraw.segments as schemseg
+import re
 from schemdraw.elements import Element
 
 class Preparation(Element):
@@ -556,6 +557,10 @@ class FlowchartRenderer:
                     
                     prev_axis = self.axis_x
                     self.axis_x = tiered_x
+                    # Ensure axis is safely to the right of the diamond and other blocks
+                    self.axis_x = max(self.axis_x, dia.E[0] + 15.0)
+                    self.axis_x = self.find_safe_x(self.axis_x, dia.E[1], dia.E[1]-10.0, direction='right', margin=8.0)
+                    
                     # Stub for 'Да' branch (True path goes to the right)
                     stub_yes = self.d.add(flow.Line().at(dia.E).right(10.0).label('Да', loc='top', fontsize=75, ofst=1.8))
                     self.d.add(flow.Line().at(stub_yes.end).tox(self.axis_x))
@@ -641,36 +646,46 @@ def extract_all_functions(root_node, code_bytes):
                 functions[name] = nodes
     return functions
 
+def process_single_node(node, code_bytes):
+    if node.type == 'expression_statement':
+        txt = code_bytes[node.start_byte:node.end_byte].decode('utf8').strip(';').strip()
+        txt = re.sub(r'\s+', ' ', txt)
+        def has_call(n):
+            if n.type == 'call_expression':
+                return True
+            for c in n.children:
+                if has_call(c):
+                    return True
+            return False
+        
+        if 'cin >>' in txt or 'cout <<' in txt:
+            return [('io', txt)]
+        elif has_call(node):
+            return [('call', txt)]
+        elif 'return' in txt: # This check is a bit weak, better to use tree-sitter for return_statement
+            return [('return', txt)]
+        else:
+            return [('statement', txt)]
+    elif node.type == 'declaration':
+        # Declarations can have multiple declarators, some with initializers
+        # We only care about initializers for flowchart purposes
+        extracted_declarations = []
+        for c in node.children:
+            if c.type == 'init_declarator':
+                txt = code_bytes[c.start_byte:c.end_byte].decode('utf8').strip()
+                txt = re.sub(r'\s+', ' ', txt)
+                if txt.startswith('*'):
+                    txt = txt[1:].strip()
+                extracted_declarations.append(('statement', txt))
+        return extracted_declarations
+    return []
+
 
 def process_compound(node, code_bytes):
     extracted = []
     for child in node.children:
-        if child.type == 'declaration':
-            has_init = False
-            for c in child.children:
-                if c.type == 'init_declarator':
-                    has_init = True
-                    txt = code_bytes[c.start_byte:c.end_byte].decode('utf8').strip()
-                    if txt.startswith('*'):
-                        txt = txt[1:].strip()
-                    extracted.append(('statement', txt))
-            if not has_init:
-                continue
-
-        elif child.type == 'expression_statement':
-            txt = code_bytes[child.start_byte:child.end_byte].decode('utf8').strip(';').strip()
-            if txt.startswith('cin >>') or txt.startswith('cout <<'):
-                extracted.append(('io', txt))
-            else:
-                def has_call(n):
-                    if n.type == 'call_expression':
-                        return True
-                    for c in n.children:
-                        if has_call(c):
-                            return True
-                    return False
-                is_call = has_call(child)
-                extracted.append(('call' if is_call else 'statement', txt))
+        if child.type in ['expression_statement', 'declaration']:
+            extracted.extend(process_single_node(child, code_bytes))
 
         elif child.type == 'while_statement':
             cond_node = child.child_by_field_name('condition')
