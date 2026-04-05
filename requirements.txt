@@ -1,0 +1,7 @@
+schemdraw
+tree-sitter
+tree-sitter-cpp
+matplotlib
+fastapi
+uvicorn
+python-multipart
